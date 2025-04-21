@@ -1,0 +1,13 @@
+{
+    "type": "code",
+    "modid": "pyrogenesis",
+    "name": "Pyrogenesis",
+    "authors": [
+        "petrichor"
+    ],
+    "description": "Enhances wildfire mechanics with respect to soil blocks to provide additional realism.",
+    "version": "1.0.2",
+    "dependencies": {
+        "game": "1.20.7"
+    }
+}

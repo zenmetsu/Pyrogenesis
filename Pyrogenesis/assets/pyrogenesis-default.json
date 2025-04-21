@@ -1,0 +1,12 @@
+{
+    // Probability of very low fertility soil upgrading to low
+    "VeryLowToLow": 0.9,
+    // Probability of low fertility soil upgrading to medium
+    "LowToMedium": 0.7,
+    // Probability of medium fertility soil upgrading to compost (high)
+    "MediumToHigh": 0.5,
+    // Probability of compost (high) fertility soil upgrading to terra preta
+    "HighToTerraPreta": 0.05,
+    // Modifier for multi-tier fertility upgrades (e.g., very low to medium)
+    "MultiTierModifier": 0.1
+}

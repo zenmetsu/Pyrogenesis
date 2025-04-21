@@ -1,0 +1,11 @@
+[
+    {
+        "op": "add",
+        "path": "/behaviors/-",
+        "value": {
+            "name": "Pyrogenesis"
+        },
+        "file": "game:blocktypes/fire.json",
+        "side": "server"
+    }
+]
