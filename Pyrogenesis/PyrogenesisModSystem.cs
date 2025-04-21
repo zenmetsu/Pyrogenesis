@@ -19,7 +19,7 @@ namespace Pyrogenesis
         private static readonly List<BlockPos> deferredFirePositions = new();
         private static readonly object deferredLock = new();
         private const string MOD_ID = "pyrogenesis";
-        private const float MIN_PROCESS_DELAY_SECONDS = 0.5f; // Reduced to 0.5f
+        private const float MIN_PROCESS_DELAY_SECONDS = 0.5f;
 
         public override void StartServerSide(ICoreServerAPI api)
         {
@@ -38,10 +38,6 @@ namespace Pyrogenesis
         {
             config = serverApi.LoadModConfig<PyrogenesisConfig>("pyrogenesis.json") ?? new PyrogenesisConfig();
             serverApi.StoreModConfig(config, "pyrogenesis.json");
-            if (config.DebugMode)
-            {
-                serverApi.Logger.Debug($"[{MOD_ID}] Loaded config with DebugMode={config.DebugMode}");
-            }
         }
 
         private void ApplyHarmonyPatches()
@@ -66,7 +62,6 @@ namespace Pyrogenesis
             var mod = api.ModLoader?.GetModSystem<PyrogenesisModSystem>();
             if (mod == null || mod.serverApi == null)
             {
-                api.Logger.Warning($"[{MOD_ID}] Mod system not initialized in InitializePrefix for fire at ({pos.X}, {pos.Y}, {pos.Z})");
                 lock (deferredLock)
                 {
                     deferredFirePositions.Add(new BlockPos(pos.X, pos.Y, pos.Z));
@@ -74,23 +69,12 @@ namespace Pyrogenesis
                 return;
             }
 
-            var abovePos = new BlockPos(pos.X, pos.Y + 1, pos.Z);
-            var aboveBlock = api.World?.BlockAccessor?.GetBlock(abovePos);
             var logInfo = mod.treeMechanics.FindNearbyLog(api.World, pos);
-            var logMessage = logInfo.HasValue
-                ? $", Nearby Log at ({logInfo.Value.Pos.X}, {logInfo.Value.Pos.Y}, {logInfo.Value.Pos.Z}), Log ID: {logInfo.Value.Id}, Log Name: {logInfo.Value.Name}"
-                : ", No nearby log found";
-            api.Logger.Notification($"[{MOD_ID}] Fire detected at ({pos.X}, {pos.Y}, {pos.Z}), Block ID: {block.Id}, Block Name: {block.Code?.ToString() ?? "null"}, Above Block ID: {aboveBlock?.Id ?? 0}, Above Block Name: {aboveBlock?.Code?.ToString() ?? "null"}{logMessage}");
-
             if (logInfo.HasValue)
             {
                 var firePosCopy = pos.Copy();
                 var logPosCopy = logInfo.Value.Pos.Copy();
                 mod.treeMechanics.AddFireToLogMapping(firePosCopy, logPosCopy);
-                if (mod.config.DebugMode)
-                {
-                    api.Logger.Debug($"[{MOD_ID}] Added fire-to-log mapping: Fire at ({firePosCopy.X}, {firePosCopy.Y}, {firePosCopy.Z}) -> Log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z})");
-                }
                 mod.treeMechanics.TryFellTree(firePosCopy);
             }
             mod.soilMechanics.QueueFireForProcessing(pos);
@@ -107,7 +91,6 @@ namespace Pyrogenesis
             var mod = __instance.Api.ModLoader?.GetModSystem<PyrogenesisModSystem>();
             if (mod == null || mod.serverApi == null)
             {
-                __instance.Api.Logger.Warning($"[{MOD_ID}] Mod system not initialized in OnBlockRemovedPrefix for fire at ({pos.X}, {pos.Y}, {pos.Z})");
                 lock (deferredLock)
                 {
                     deferredFirePositions.Add(new BlockPos(pos.X, pos.Y, pos.Z));
@@ -115,15 +98,8 @@ namespace Pyrogenesis
                 return;
             }
 
-            var abovePos = new BlockPos(pos.X, pos.Y + 1, pos.Z);
-            var aboveBlock = __instance.Api.World?.BlockAccessor?.GetBlock(abovePos);
-            var logInfo = mod.treeMechanics.FindNearbyLog(__instance.Api.World, pos);
-            var logMessage = logInfo.HasValue
-                ? $", Nearby Log at ({logInfo.Value.Pos.X}, {logInfo.Value.Pos.Y}, {logInfo.Value.Pos.Z}), Log ID: {logInfo.Value.Id}, Log Name: {logInfo.Value.Name}"
-                : ", No nearby log found";
-            __instance.Api.Logger.Notification($"[{MOD_ID}] Fire burnout detected at ({pos.X}, {pos.Y}, {pos.Z}), Block ID: {block.Id}, Block Name: {block.Code?.ToString() ?? "null"}, Above Block ID: {aboveBlock?.Id ?? 0}, Above Block Name: {aboveBlock?.Code?.ToString() ?? "null"}{logMessage}");
-
             mod.soilMechanics.ProcessPendingBlock(pos, true);
+            var logInfo = mod.treeMechanics.FindNearbyLog(__instance.Api.World, pos);
             if (logInfo.HasValue)
             {
                 mod.treeMechanics.TryFellTree(pos);
@@ -137,6 +113,8 @@ namespace Pyrogenesis
 
             var currentTime = serverApi.World.ElapsedMilliseconds / 1000f;
             var toRemove = new List<BlockPos>();
+            var leafBlocksDestroyed = new List<BlockPos>();
+            var logBlocksDestroyed = new List<BlockPos>();
 
             foreach (var kvp in treeMechanics.GetBurningBlocks())
             {
@@ -147,13 +125,26 @@ namespace Pyrogenesis
                     if (block.Code?.ToString() == burning.BlockCode)
                     {
                         serverApi.World.BlockAccessor.BreakBlock(burning.Pos, null, 1f);
-                        if (config.DebugMode)
+                        if (burning.BlockCode.StartsWith("game:leaves-"))
                         {
-                            serverApi.Logger.Debug($"[{MOD_ID}] Burned block at ({burning.Pos.X}, {burning.Pos.Y}, {burning.Pos.Z}): {burning.BlockCode}");
+                            leafBlocksDestroyed.Add(burning.Pos);
+                        }
+                        else if (config.TreeLogPrefixes.Any(prefix => burning.BlockCode.StartsWith($"game:{prefix}-")))
+                        {
+                            logBlocksDestroyed.Add(burning.Pos);
                         }
                     }
                     toRemove.Add(burning.Pos);
                 }
+            }
+
+            if (leafBlocksDestroyed.Count > 0)
+            {
+                serverApi.Logger.Notification($"[{MOD_ID}] [tree] Leaf destruction event: {leafBlocksDestroyed.Count} blocks destroyed");
+            }
+            if (logBlocksDestroyed.Count > 0)
+            {
+                serverApi.Logger.Notification($"[{MOD_ID}] [tree] Tree felling event: {logBlocksDestroyed.Count} log blocks destroyed");
             }
 
             foreach (var pos in toRemove)
@@ -199,10 +190,6 @@ namespace Pyrogenesis
                 {
                     soilMechanics.ProcessPendingBlock(firePos, true);
                     toRemove.Add(kvp.Key);
-                    if (config.DebugMode)
-                    {
-                        serverApi.Logger.Debug($"[{MOD_ID}] Processed pending soil block at ({pending.Pos.X}, {pending.Pos.Y}, {pending.Pos.Z}) due to timeout or fire burnout");
-                    }
                 }
             }
 

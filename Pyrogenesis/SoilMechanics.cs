@@ -30,15 +30,15 @@ namespace Pyrogenesis
                 .Where(b => b.Code != null && (b.Code.ToString().StartsWith("game:soil-") || b.Code.ToString().StartsWith("game:cob-")))
                 .Select(b => b.Code.ToString())
                 .ToList();
-            api.Logger.Debug($"[{MOD_ID}] Available soil blocks: {string.Join(", ", soilBlocks)}");
+            api.Logger.Debug($"[{MOD_ID}] [soil] Available soil blocks: {string.Join(", ", soilBlocks)}");
             var noneVariants = soilBlocks.Where(b => b.EndsWith("-none")).ToList();
             if (!noneVariants.Any())
             {
-                api.Logger.Warning($"[{MOD_ID}] No soil or cob blocks with '-none' variant found in block registry");
+                api.Logger.Warning($"[{MOD_ID}] [soil] No soil or cob blocks with '-none' variant found in block registry");
             }
             else
             {
-                api.Logger.Debug($"[{MOD_ID}] Found '-none' variants: {string.Join(", ", noneVariants)}");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Found '-none' variants: {string.Join(", ", noneVariants)}");
             }
         }
 
@@ -46,13 +46,11 @@ namespace Pyrogenesis
 
         public void QueueFireForProcessing(BlockPos pos)
         {
-            // Log fire detection for debugging
             if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] Processing fire at ({pos.X}, {pos.Y}, {pos.Z})");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Processing fire at ({pos.X}, {pos.Y}, {pos.Z})");
             }
 
-            // Check block at y-1 (e.g., grass tufts or soil)
             var belowPos = new BlockPos(pos.X, pos.Y - 1, pos.Z);
             var block = api.World.BlockAccessor.GetBlock(belowPos);
             var blockCode = block?.Code?.ToString();
@@ -62,14 +60,13 @@ namespace Pyrogenesis
                 pendingBlocks[belowPos.Copy()] = new PendingBlock(belowPos.Copy(), blockCode, api.World.ElapsedMilliseconds / 1000f, true);
                 if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Queued soil block for processing at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}): {blockCode}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Queued soil block for processing at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}): {blockCode}");
                 }
-                TryConvertToBarrenSoil(belowPos); // Process immediately to avoid timing issues
+                TryConvertToBarrenSoil(belowPos);
                 pendingBlocks.Remove(belowPos);
             }
             else if (blockCode != null && blockCode.StartsWith("game:tallgrass-"))
             {
-                // Check y-2 for soil if y-1 is grass tuft
                 var soilPos = new BlockPos(pos.X, pos.Y - 2, pos.Z);
                 var soilBlock = api.World.BlockAccessor.GetBlock(soilPos);
                 var soilBlockCode = soilBlock?.Code?.ToString();
@@ -78,19 +75,19 @@ namespace Pyrogenesis
                     pendingBlocks[soilPos.Copy()] = new PendingBlock(soilPos.Copy(), soilBlockCode, api.World.ElapsedMilliseconds / 1000f, true);
                     if (config.DebugMode)
                     {
-                        api.Logger.Debug($"[{MOD_ID}] Queued soil block below grass tuft for processing at ({soilPos.X}, {soilPos.Y}, {soilPos.Z}): {soilBlockCode}");
+                        api.Logger.Debug($"[{MOD_ID}] [soil] Queued soil block below grass tuft for processing at ({soilPos.X}, {soilPos.Y}, {soilPos.Z}): {soilBlockCode}");
                     }
-                    TryConvertToBarrenSoil(soilPos); // Process immediately
+                    TryConvertToBarrenSoil(soilPos);
                     pendingBlocks.Remove(soilPos);
                 }
                 else if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Skipped queuing block below grass tuft at ({soilPos.X}, {soilPos.Y}, {soilPos.Z}): not a soil block, code={soilBlockCode ?? "null"}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Skipped queuing block below grass tuft at ({soilPos.X}, {soilPos.Y}, {soilPos.Z}): not a soil block, code={soilBlockCode ?? "null"}");
                 }
             }
             else if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] Skipped queuing block at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}): not a soil block, code={blockCode ?? "null"}");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Skipped queuing block at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}): not a soil block, code={blockCode ?? "null"}");
             }
         }
 
@@ -103,7 +100,7 @@ namespace Pyrogenesis
                 {
                     if (config.DebugMode)
                     {
-                        api.Logger.Debug($"[{MOD_ID}] No pending soil block found at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}) or ({pos.X}, {pos.Y}, {pos.Z}) for fire at ({pos.X}, {pos.Y}, {pos.Z})");
+                        api.Logger.Debug($"[{MOD_ID}] [soil] No pending soil block found at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}) or ({pos.X}, {pos.Y}, {pos.Z}) for fire at ({pos.X}, {pos.Y}, {pos.Z})");
                     }
                     TryConvertToBarrenSoil(belowPos);
                     return;
@@ -117,7 +114,7 @@ namespace Pyrogenesis
             {
                 if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Block at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}) changed: expected {pending.BlockCode}, found {blockCode ?? "null"}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Block at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}) changed: expected {pending.BlockCode}, found {blockCode ?? "null"}");
                 }
                 if (IsSoilBlock(blockCode))
                 {
@@ -134,7 +131,7 @@ namespace Pyrogenesis
             {
                 if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Block at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}) is not a soil block: {blockCode ?? "null"}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Block at ({belowPos.X}, {belowPos.Y}, {belowPos.Z}) is not a soil block: {blockCode ?? "null"}");
                 }
                 if (removeIfProcessed)
                 {
@@ -158,16 +155,14 @@ namespace Pyrogenesis
             {
                 if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Cannot convert block at ({pos.X}, {pos.Y}, {pos.Z}) to -none variant: not a soil block, code={blockCode ?? "null"}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Cannot convert block at ({pos.X}, {pos.Y}, {pos.Z}) to -none variant: not a soil block, code={blockCode ?? "null"}");
                 }
                 return;
             }
 
-            // Extract base prefix and determine if cob or soil
             var parts = blockCode.Split('-');
             if (parts.Length < 2)
             {
-                api.Logger.Error($"[{MOD_ID}] Invalid soil block code at ({pos.X}, {pos.Y}, {pos.Z}): {blockCode}");
                 return;
             }
             string basePrefix;
@@ -180,30 +175,25 @@ namespace Pyrogenesis
             {
                 if (parts.Length < 3)
                 {
-                    api.Logger.Error($"[{MOD_ID}] Invalid soil block code at ({pos.X}, {pos.Y}, {pos.Z}): {blockCode}");
                     return;
                 }
                 basePrefix = "game:soil";
             }
             else
             {
-                api.Logger.Error($"[{MOD_ID}] Unexpected soil block code at ({pos.X}, {pos.Y}, {pos.Z}): {blockCode}");
                 return;
             }
 
-            // Extract fertility tier for soil blocks
-            string fertilityTier = isCob ? "cob" : parts[1]; // e.g., "cob" or "verylow", "low", "medium", "compost", "high"
+            string fertilityTier = isCob ? "cob" : parts[1];
             if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] Block code parts: {string.Join(", ", parts)}, extracted fertility tier: {fertilityTier}, base prefix: {basePrefix}");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Block code parts: {string.Join(", ", parts)}, extracted fertility tier: {fertilityTier}, base prefix: {basePrefix}");
             }
 
-            // Convert to -none variant
             var noneBlockCode = $"{basePrefix}-{fertilityTier}-none";
             var barrenBlock = api.World.GetBlock(new AssetLocation(noneBlockCode));
             if (barrenBlock == null)
             {
-                // Try alternative grass coverage variants
                 var fallbackCodes = new[] { $"{basePrefix}-{fertilityTier}-no-grass", $"{basePrefix}-{fertilityTier}-free" };
                 foreach (var code in fallbackCodes)
                 {
@@ -212,7 +202,7 @@ namespace Pyrogenesis
                     {
                         if (config.DebugMode)
                         {
-                            api.Logger.Debug($"[{MOD_ID}] Found fallback -none soil block: {code}");
+                            api.Logger.Debug($"[{MOD_ID}] [soil] Found fallback -none soil block: {code}");
                         }
                         noneBlockCode = code;
                         break;
@@ -220,20 +210,17 @@ namespace Pyrogenesis
                 }
                 if (barrenBlock == null)
                 {
-                    api.Logger.Error($"[{MOD_ID}] Failed to find -none soil block (tried: {noneBlockCode}, {string.Join(", ", fallbackCodes)}) for conversion at ({pos.X}, {pos.Y}, {pos.Z})");
                     return;
                 }
             }
 
-            // Convert to -none
             api.World.BlockAccessor.SetBlock(barrenBlock.Id, pos);
-            api.Logger.Notification($"[{MOD_ID}] Converted soil block at ({pos.X}, {pos.Y}, {pos.Z}) from {blockCode} to {noneBlockCode}");
+            api.Logger.Notification($"[{MOD_ID}] [soil] Converted soil block at ({pos.X}, {pos.Y}, {pos.Z}) from {blockCode} to {noneBlockCode}");
             if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] Successfully converted block at ({pos.X}, {pos.Y}, {pos.Z}) to -none variant (ID: {barrenBlock.Id}, Code: {noneBlockCode})");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Successfully converted block at ({pos.X}, {pos.Y}, {pos.Z}) to -none variant (ID: {barrenBlock.Id}, Code: {noneBlockCode})");
             }
 
-            // Apply fertility upgrades only for soil blocks, not cob
             if (!isCob)
             {
                 var newFertilityTier = TryUpgradeFertility(fertilityTier);
@@ -243,7 +230,6 @@ namespace Pyrogenesis
                     var upgradedBlock = api.World.GetBlock(new AssetLocation(upgradedBlockCode));
                     if (upgradedBlock == null)
                     {
-                        // Try fallback for upgraded block
                         var upgradedFallbackCodes = new[] { $"game:soil-{newFertilityTier}-no-grass", $"game:soil-{newFertilityTier}-free" };
                         foreach (var code in upgradedFallbackCodes)
                         {
@@ -252,7 +238,7 @@ namespace Pyrogenesis
                             {
                                 if (config.DebugMode)
                                 {
-                                    api.Logger.Debug($"[{MOD_ID}] Found fallback upgraded soil block: {code}");
+                                    api.Logger.Debug($"[{MOD_ID}] [soil] Found fallback upgraded soil block: {code}");
                                 }
                                 upgradedBlockCode = code;
                                 break;
@@ -260,15 +246,14 @@ namespace Pyrogenesis
                         }
                         if (upgradedBlock == null)
                         {
-                            api.Logger.Error($"[{MOD_ID}] Failed to find upgraded soil block (tried: {upgradedBlockCode}, {string.Join(", ", upgradedFallbackCodes)}) at ({pos.X}, {pos.Y}, {pos.Z})");
                             return;
                         }
                     }
                     api.World.BlockAccessor.SetBlock(upgradedBlock.Id, pos);
-                    api.Logger.Notification($"[{MOD_ID}] Upgraded soil fertility at ({pos.X}, {pos.Y}, {pos.Z}) from {noneBlockCode} to {upgradedBlockCode}");
+                    api.Logger.Notification($"[{MOD_ID}] [soil] Upgraded soil fertility at ({pos.X}, {pos.Y}, {pos.Z}) from {noneBlockCode} to {upgradedBlockCode}");
                     if (config.DebugMode)
                     {
-                        api.Logger.Debug($"[{MOD_ID}] Successfully upgraded fertility at ({pos.X}, {pos.Y}, {pos.Z}) to {upgradedBlockCode}");
+                        api.Logger.Debug($"[{MOD_ID}] [soil] Successfully upgraded fertility at ({pos.X}, {pos.Y}, {pos.Z}) to {upgradedBlockCode}");
                     }
                 }
             }
@@ -279,7 +264,7 @@ namespace Pyrogenesis
             double roll = rand.NextDouble();
             if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] Fertility upgrade roll: {roll}, current tier: {currentTier}");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Fertility upgrade roll: {roll}, current tier: {currentTier}");
             }
             double multiTierMod = config.MultiTierModifier;
 
@@ -314,12 +299,11 @@ namespace Pyrogenesis
                         return "high";
                     break;
                 case "high":
-                    // No further upgrades (Terra Preta is the highest)
                     break;
                 default:
                     if (config.DebugMode)
                     {
-                        api.Logger.Debug($"[{MOD_ID}] Unknown fertility tier: {currentTier}");
+                        api.Logger.Debug($"[{MOD_ID}] [soil] Unknown fertility tier: {currentTier}");
                     }
                     break;
             }
@@ -331,13 +315,13 @@ namespace Pyrogenesis
             if (string.IsNullOrEmpty(blockCode)) return false;
             if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] Checking block: {blockCode}");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Checking block: {blockCode}");
             }
             if (blockCode.StartsWith("game:soil-") || blockCode.StartsWith("game:cob-"))
             {
                 if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Identified block as soil: {blockCode}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Identified block as soil: {blockCode}");
                 }
                 return true;
             }
@@ -345,7 +329,7 @@ namespace Pyrogenesis
             {
                 if (config.DebugMode)
                 {
-                    api.Logger.Debug($"[{MOD_ID}] Identified block as forest floor (treated as soil due to ConvertForestFloorToSoil): {blockCode}");
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Identified block as forest floor (treated as soil due to ConvertForestFloorToSoil): {blockCode}");
                 }
                 return true;
             }
