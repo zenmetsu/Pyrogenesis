@@ -428,20 +428,20 @@ namespace Pyrogenesis
                 api.Logger.Debug($"[{MOD_ID}] [tree] Starting tree search at ({startPos.X}, {startPos.Y}, {startPos.Z}), TreeFellingGroupCode: {treeFellingGroupCode}, SpreadIndex: {spreadIndex}");
             }
 
-            var queue = new Queue<(BlockPos Pos, int SpreadIndex, int Distance)>();
-            var leafQueue = new Queue<(BlockPos Pos, int SpreadIndex, string GroupCode, int Distance)>();
+            var queue = new Queue<(BlockPos Pos, int SpreadIndex, int Distance, BlockPos Parent)>();
+            var leafQueue = new Queue<(BlockPos Pos, int SpreadIndex, string GroupCode, int Distance, BlockPos Parent)>();
             var visited = new HashSet<BlockPos>();
             var treeBlocks = new List<BlockPos>();
             var logPositions = new List<BlockPos>();
             var leafPositions = new List<(BlockPos Pos, int DistanceFromBase)>();
             var leafGroupCounts = new Dictionary<string, int>();
 
-            queue.Enqueue((startPos.Copy(), spreadIndex, 0));
-            visited.Add(startPos);
+            queue.Enqueue((startPos.Copy(), spreadIndex, 0, null));
+            // Do not add startPos to visited yet, to allow re-checking if needed
 
             while (queue.Count > 0)
             {
-                var (currentPos, currentSpreadIndex, currentDistance) = queue.Dequeue();
+                var (currentPos, currentSpreadIndex, currentDistance, currentParent) = queue.Dequeue();
                 var block = world.BlockAccessor.GetBlock(currentPos);
                 var blockCode = block.Code?.ToString();
 
@@ -463,29 +463,58 @@ namespace Pyrogenesis
                         logPositions.Add(currentPos.Copy());
                     }
 
+                    // Add to visited after processing to allow re-checking if needed
+                    visited.Add(currentPos);
+
                     for (int i = 0; i < Vec3i.DirectAndIndirectNeighbours.Length; i++)
                     {
                         var facing = Vec3i.DirectAndIndirectNeighbours[i];
                         var neighborPos = new BlockPos(currentPos.X + facing.X, currentPos.Y + facing.Y, currentPos.Z + facing.Z);
 
                         float horDist = GameMath.Sqrt(neighborPos.HorDistanceSqTo(startPos.X, startPos.Z));
-                        if (horDist > config.LeafSearchRadius) continue;
-                        if (visited.Contains(neighborPos)) continue;
+                        if (horDist > config.LeafSearchRadius)
+                        {
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Skipped neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to LeafSearchRadius: horDist={horDist}, LeafSearchRadius={config.LeafSearchRadius}");
+                            }
+                            continue;
+                        }
+                        if (visited.Contains(neighborPos))
+                        {
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Skipped neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) because already visited");
+                            }
+                            continue;
+                        }
 
                         var neighborBlock = world.BlockAccessor.GetBlock(neighborPos);
                         var neighborCode = neighborBlock.Code?.ToString();
                         if (neighborCode == null || neighborBlock.Id == 0)
                         {
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Skipped neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to air or null block");
+                            }
                             continue;
                         }
 
                         string nNgCode = neighborBlock.Attributes?["treeFellingGroupCode"].AsString();
                         int nNSpreadIndex = NeedsSpreadIndex(neighborCode) ? neighborBlock.Attributes?["treeFellingGroupSpreadIndex"].AsInt(0) ?? 0 : -1;
 
-                        string normalizedGroupCode = nNgCode;
-                        if (IsTreeLeaf(neighborCode, config) && nNgCode != null && nNgCode.Length > 1 && char.IsDigit(nNgCode[0]))
+                        string normalizedGroupCode = nNgCode ?? "";
+                        if (IsTreeLeaf(neighborCode, config) && nNgCode != null)
                         {
-                            normalizedGroupCode = nNgCode.Substring(1);
+                            // Handle both digit-prefixed and non-prefixed group codes
+                            if (nNgCode.Length > 1 && char.IsDigit(nNgCode[0]))
+                            {
+                                normalizedGroupCode = nNgCode.Substring(1);
+                            }
+                            else
+                            {
+                                normalizedGroupCode = nNgCode;
+                            }
                             if (config.DebugMode)
                             {
                                 api.Logger.Debug($"[{MOD_ID}] [tree] Normalized leaf group code at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) from {nNgCode} to {normalizedGroupCode}");
@@ -499,8 +528,7 @@ namespace Pyrogenesis
 
                         if (IsTreeLog(neighborCode, config) && nNgCode != null && (nNgCode == treeFellingGroupCode || nNgCode.EndsWith(treeFellingGroupCode)) && (nNSpreadIndex <= currentSpreadIndex || !NeedsSpreadIndex(neighborCode)))
                         {
-                            queue.Enqueue((neighborPos.Copy(), nNSpreadIndex, currentDistance + 1));
-                            visited.Add(neighborPos);
+                            queue.Enqueue((neighborPos.Copy(), nNSpreadIndex, currentDistance + 1, currentPos.Copy()));
                             if (config.DebugMode)
                             {
                                 api.Logger.Debug($"[{MOD_ID}] [tree] Enqueued log at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) with Distance: {currentDistance + 1}, TreeFellingGroupCode: {nNgCode}");
@@ -508,8 +536,20 @@ namespace Pyrogenesis
                         }
                         else if (IsTreeLeaf(neighborCode, config) && nNgCode != null && normalizedGroupCode == treeFellingGroupCode)
                         {
-                            leafQueue.Enqueue((neighborPos.Copy(), nNSpreadIndex, nNgCode, currentDistance + 1));
-                            visited.Add(neighborPos);
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Attempting to enqueue leaf at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}), BlockCode: {neighborCode}, Original GroupCode: {nNgCode}, Normalized: {normalizedGroupCode}");
+                            }
+                            bool isConnected = IsConnectedToLog(world, neighborPos, new HashSet<BlockPos>(), treeFellingGroupCode, startPos);
+                            if (!isConnected)
+                            {
+                                if (config.DebugMode)
+                                {
+                                    api.Logger.Debug($"[{MOD_ID}] [tree] Skipped leaf at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to lack of connectivity to log");
+                                }
+                                continue;
+                            }
+                            leafQueue.Enqueue((neighborPos.Copy(), nNSpreadIndex, nNgCode, currentDistance + 1, currentPos.Copy()));
                             leafGroupCounts[nNgCode] = leafGroupCounts.GetValueOrDefault(nNgCode, 0) + 1;
                             if (config.DebugMode)
                             {
@@ -529,17 +569,24 @@ namespace Pyrogenesis
 
             while (leafQueue.Count > 0)
             {
-                var (currentPos, currentSpreadIndex, currentGroupCode, currentDistance) = leafQueue.Dequeue();
+                var (currentPos, currentSpreadIndex, currentGroupCode, currentDistance, currentParent) = leafQueue.Dequeue();
                 var block = world.BlockAccessor.GetBlock(currentPos);
                 var blockCode = block.Code?.ToString();
 
                 if (blockCode == null || block.Id == 0) continue;
 
                 string ngCode = block.Attributes?["treeFellingGroupCode"].AsString();
-                string normalizedGroupCode = ngCode;
-                if (IsTreeLeaf(blockCode, config) && ngCode != null && ngCode.Length > 1 && char.IsDigit(ngCode[0]))
+                string normalizedGroupCode = ngCode ?? "";
+                if (IsTreeLeaf(blockCode, config) && ngCode != null)
                 {
-                    normalizedGroupCode = ngCode.Substring(1);
+                    if (ngCode.Length > 1 && char.IsDigit(ngCode[0]))
+                    {
+                        normalizedGroupCode = ngCode.Substring(1);
+                    }
+                    else
+                    {
+                        normalizedGroupCode = ngCode;
+                    }
                     if (config.DebugMode)
                     {
                         api.Logger.Debug($"[{MOD_ID}] [tree] Normalized leaf group code at ({currentPos.X}, {currentPos.Y}, {currentPos.Z}) from {ngCode} to {normalizedGroupCode}");
@@ -563,26 +610,57 @@ namespace Pyrogenesis
                         }
                     }
 
+                    // Add to visited after processing to allow re-checking
+                    visited.Add(currentPos);
+
                     for (int i = 0; i < Vec3i.DirectAndIndirectNeighbours.Length; i++)
                     {
                         var facing = Vec3i.DirectAndIndirectNeighbours[i];
                         var neighborPos = new BlockPos(currentPos.X + facing.X, currentPos.Y + facing.Y, currentPos.Z + facing.Z);
 
                         float horDist = GameMath.Sqrt(neighborPos.HorDistanceSqTo(startPos.X, startPos.Z));
-                        if (horDist > config.LeafSearchRadius) continue;
-                        if (visited.Contains(neighborPos)) continue;
+                        if (horDist > config.LeafSearchRadius)
+                        {
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Skipped leaf neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to LeafSearchRadius: horDist={horDist}, LeafSearchRadius={config.LeafSearchRadius}");
+                            }
+                            continue;
+                        }
+                        if (visited.Contains(neighborPos))
+                        {
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Skipped leaf neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) because already visited");
+                            }
+                            continue;
+                        }
 
                         var neighborBlock = world.BlockAccessor.GetBlock(neighborPos);
                         var neighborCode = neighborBlock.Code?.ToString();
-                        if (neighborCode == null || neighborBlock.Id == 0) continue;
+                        if (neighborCode == null || neighborBlock.Id == 0)
+                        {
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Skipped leaf neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to air or null block");
+                            }
+                            continue;
+                        }
 
                         string nNgCode = neighborBlock.Attributes?["treeFellingGroupCode"].AsString();
-                        int nNSpreadIndex = block.Attributes?["treeFellingGroupSpreadIndex"].AsInt(0) ?? 0;
+                        int nNSpreadIndex = NeedsSpreadIndex(neighborCode) ? neighborBlock.Attributes?["treeFellingGroupSpreadIndex"].AsInt(0) ?? 0 : -1;
 
-                        string neighborNormalizedGroupCode = nNgCode;
-                        if (IsTreeLeaf(neighborCode, config) && nNgCode != null && nNgCode.Length > 1 && char.IsDigit(nNgCode[0]))
+                        string neighborNormalizedGroupCode = nNgCode ?? "";
+                        if (IsTreeLeaf(neighborCode, config) && nNgCode != null)
                         {
-                            neighborNormalizedGroupCode = nNgCode.Substring(1);
+                            if (nNgCode.Length > 1 && char.IsDigit(nNgCode[0]))
+                            {
+                                neighborNormalizedGroupCode = nNgCode.Substring(1);
+                            }
+                            else
+                            {
+                                neighborNormalizedGroupCode = nNgCode;
+                            }
                             if (config.DebugMode)
                             {
                                 api.Logger.Debug($"[{MOD_ID}] [tree] Normalized leaf group code at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) from {nNgCode} to {neighborNormalizedGroupCode}");
@@ -596,8 +674,20 @@ namespace Pyrogenesis
 
                         if (nNgCode != null && neighborNormalizedGroupCode == treeFellingGroupCode)
                         {
-                            leafQueue.Enqueue((neighborPos.Copy(), nNSpreadIndex, nNgCode, currentDistance + 1));
-                            visited.Add(neighborPos);
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Attempting to enqueue leaf neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}), BlockCode: {neighborCode}, Original GroupCode: {nNgCode}, Normalized: {neighborNormalizedGroupCode}");
+                            }
+                            bool isConnected = IsConnectedToLog(world, neighborPos, new HashSet<BlockPos>(), treeFellingGroupCode, startPos);
+                            if (!isConnected)
+                            {
+                                if (config.DebugMode)
+                                {
+                                    api.Logger.Debug($"[{MOD_ID}] [tree] Skipped leaf neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to lack of connectivity to log");
+                                }
+                                continue;
+                            }
+                            leafQueue.Enqueue((neighborPos.Copy(), nNSpreadIndex, nNgCode, currentDistance + 1, currentPos.Copy()));
                             leafGroupCounts[nNgCode] = leafGroupCounts.GetValueOrDefault(nNgCode, 0) + 1;
                             if (config.DebugMode)
                             {
@@ -616,6 +706,129 @@ namespace Pyrogenesis
             }
 
             return (treeBlocks, logPositions, leafPositions);
+        }
+
+        private bool IsConnectedToLog(IWorldAccessor world, BlockPos leafPos, HashSet<BlockPos> initialVisited, string treeFellingGroupCode, BlockPos startPos)
+        {
+            var queue = new Queue<(BlockPos Pos, BlockPos Parent)>();
+            var localVisited = new HashSet<BlockPos>(initialVisited);
+            queue.Enqueue((leafPos.Copy(), null));
+            localVisited.Add(leafPos);
+
+            while (queue.Count > 0)
+            {
+                var (currentPos, currentParent) = queue.Dequeue();
+                var block = world.BlockAccessor.GetBlock(currentPos);
+                var blockCode = block.Code?.ToString();
+
+                if (blockCode == null || block.Id == 0)
+                {
+                    if (config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check skipped block at ({currentPos.X}, {currentPos.Y}, {currentPos.Z}) due to air or null block");
+                    }
+                    continue;
+                }
+
+                string ngCode = block.Attributes?["treeFellingGroupCode"].AsString();
+                string normalizedGroupCode = ngCode ?? "";
+                if (IsTreeLeaf(blockCode, config) && ngCode != null)
+                {
+                    if (ngCode.Length > 1 && char.IsDigit(ngCode[0]))
+                    {
+                        normalizedGroupCode = ngCode.Substring(1);
+                    }
+                    else
+                    {
+                        normalizedGroupCode = ngCode;
+                    }
+                }
+
+                if (IsTreeLog(blockCode, config) && ngCode != null && (ngCode == treeFellingGroupCode || ngCode.EndsWith(treeFellingGroupCode)))
+                {
+                    if (config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check found log at ({currentPos.X}, {currentPos.Y}, {currentPos.Z}), BlockCode: {blockCode}, TreeFellingGroupCode: {ngCode}");
+                    }
+                    return true;
+                }
+
+                for (int i = 0; i < Vec3i.DirectAndIndirectNeighbours.Length; i++)
+                {
+                    var facing = Vec3i.DirectAndIndirectNeighbours[i];
+                    var neighborPos = new BlockPos(currentPos.X + facing.X, currentPos.Y + facing.Y, currentPos.Z + facing.Z);
+
+                    float horDist = GameMath.Sqrt(neighborPos.HorDistanceSqTo(startPos.X, startPos.Z));
+                    if (horDist > config.LeafSearchRadius)
+                    {
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check skipped neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to LeafSearchRadius: horDist={horDist}, LeafSearchRadius={config.LeafSearchRadius}");
+                        }
+                        continue;
+                    }
+                    if (localVisited.Contains(neighborPos))
+                    {
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check skipped neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) because already visited");
+                        }
+                        continue;
+                    }
+
+                    var neighborBlock = world.BlockAccessor.GetBlock(neighborPos);
+                    var neighborCode = neighborBlock.Code?.ToString();
+                    if (neighborCode == null || neighborBlock.Id == 0)
+                    {
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check skipped neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) due to air or null block");
+                        }
+                        continue;
+                    }
+
+                    string nNgCode = neighborBlock.Attributes?["treeFellingGroupCode"].AsString();
+                    string neighborNormalizedGroupCode = nNgCode ?? "";
+                    if (IsTreeLeaf(neighborCode, config) && nNgCode != null)
+                    {
+                        if (nNgCode.Length > 1 && char.IsDigit(nNgCode[0]))
+                        {
+                            neighborNormalizedGroupCode = nNgCode.Substring(1);
+                        }
+                        else
+                        {
+                            neighborNormalizedGroupCode = nNgCode;
+                        }
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check normalized group code at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}) from {nNgCode} to {neighborNormalizedGroupCode}");
+                        }
+                    }
+
+                    if ((IsTreeLog(neighborCode, config) || IsTreeLeaf(neighborCode, config)) && nNgCode != null && neighborNormalizedGroupCode == treeFellingGroupCode)
+                    {
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check enqueued block at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}), BlockCode: {neighborCode}, TreeFellingGroupCode: {nNgCode}, Normalized: {neighborNormalizedGroupCode}");
+                        }
+                        queue.Enqueue((neighborPos.Copy(), currentPos.Copy()));
+                        localVisited.Add(neighborPos);
+                    }
+                    else
+                    {
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check skipped block at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}), BlockCode: {neighborCode ?? "null"}, TreeFellingGroupCode: {nNgCode ?? "null"}, Normalized: {neighborNormalizedGroupCode}, IsLog: {IsTreeLog(neighborCode, config)}, IsLeaf: {IsTreeLeaf(neighborCode, config)}");
+                        }
+                    }
+                }
+            }
+
+            if (config.DebugMode)
+            {
+                api.Logger.Debug($"[{MOD_ID}] [tree] Connectivity check for leaf at ({leafPos.X}, {leafPos.Y}, {leafPos.Z}) failed to find a log");
+            }
+            return false;
         }
 
         private bool NeedsSpreadIndex(string blockCode)
