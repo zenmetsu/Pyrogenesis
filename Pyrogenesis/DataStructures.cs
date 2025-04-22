@@ -9,12 +9,14 @@ namespace Pyrogenesis
         public string BlockCode { get; }
         public float BurnStartTime { get; }
         public float BurnDuration { get; }
+        public int DistanceFromBase { get; } // New field for distance score
 
-        public BurningBlock(BlockPos pos, string blockCode, float burnStartTime, PyrogenesisConfig config)
+        public BurningBlock(BlockPos pos, string blockCode, float burnStartTime, PyrogenesisConfig config, int distanceFromBase = 0)
         {
             Pos = pos;
             BlockCode = blockCode;
             BurnStartTime = burnStartTime;
+            DistanceFromBase = distanceFromBase; // Initialize the new field
 
             // Determine burn duration based on block type
             if (blockCode != null && (blockCode.StartsWith("game:leaves-") || blockCode.StartsWith("game:leavesbranchy-")))
