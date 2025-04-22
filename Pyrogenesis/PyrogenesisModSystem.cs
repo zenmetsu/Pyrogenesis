@@ -5,7 +5,6 @@ using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using Vintagestory.API.MathTools;
 using HarmonyLib;
-using Pyrogenesis;
 
 namespace Pyrogenesis
 {
@@ -18,6 +17,8 @@ namespace Pyrogenesis
         private PyrogenesisConfig config;
         private static readonly List<BlockPos> deferredFirePositions = new();
         private static readonly object deferredLock = new();
+        private readonly HashSet<string> processedTrees = new(); // Track processed tree IDs
+        private readonly Dictionary<BlockPos, string> logToTreeIdMap = new(); // Map log positions to tree IDs
         private const string MOD_ID = "pyrogenesis";
         private const float MIN_PROCESS_DELAY_SECONDS = 0.5f;
 
@@ -78,6 +79,47 @@ namespace Pyrogenesis
             {
                 var firePosCopy = pos.Copy();
                 var logPosCopy = logInfo.Value.Pos.Copy();
+                var logBlock = api.World.BlockAccessor.GetBlock(logPosCopy);
+                string treeId = logBlock.Attributes?["treeFellingGroupCode"].AsString();
+                if (string.IsNullOrEmpty(treeId))
+                {
+                    if (mod.config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] InitializePrefix skipped: Invalid treeId for log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z})");
+                    }
+                    return;
+                }
+
+                string treeKey = null;
+                if (mod.logToTreeIdMap.TryGetValue(logPosCopy, out var existingTreeKey))
+                {
+                    treeKey = existingTreeKey;
+                    if (mod.config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] InitializePrefix: Log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z}) mapped to existing tree {treeKey}");
+                    }
+                }
+                else
+                {
+                    var basePos = mod.treeMechanics.FindTreeBase(api.World, logPosCopy, logBlock.Code.ToString());
+                    treeKey = $"{treeId}:{basePos.X},{basePos.Y},{basePos.Z}";
+                    mod.logToTreeIdMap[logPosCopy] = treeKey;
+                    if (mod.config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] InitializePrefix: Log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z}) mapped to new tree {treeKey}");
+                    }
+                }
+
+                if (mod.processedTrees.Contains(treeKey))
+                {
+                    if (mod.config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] InitializePrefix skipped: Tree {treeKey} already processed for fire at ({firePosCopy.X}, {firePosCopy.Y}, {firePosCopy.Z})");
+                    }
+                    return;
+                }
+
+                mod.processedTrees.Add(treeKey);
                 mod.treeMechanics.AddFireToLogMapping(firePosCopy, logPosCopy);
                 mod.treeMechanics.TryFellTree(firePosCopy);
             }
@@ -106,7 +148,50 @@ namespace Pyrogenesis
             var logInfo = mod.treeMechanics.FindNearbyLog(__instance.Api.World, pos);
             if (logInfo.HasValue)
             {
-                mod.treeMechanics.TryFellTree(pos);
+                var logPosCopy = logInfo.Value.Pos.Copy();
+                var logBlock = __instance.Api.World.BlockAccessor.GetBlock(logPosCopy);
+                string treeId = logBlock.Attributes?["treeFellingGroupCode"].AsString();
+                if (string.IsNullOrEmpty(treeId))
+                {
+                    if (mod.config.DebugMode)
+                    {
+                        __instance.Api.Logger.Debug($"[{MOD_ID}] [tree] OnBlockRemovedPrefix skipped: Invalid treeId for log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z})");
+                    }
+                    return;
+                }
+
+                string treeKey = null;
+                if (mod.logToTreeIdMap.TryGetValue(logPosCopy, out var existingTreeKey))
+                {
+                    treeKey = existingTreeKey;
+                    if (mod.config.DebugMode)
+                    {
+                        __instance.Api.Logger.Debug($"[{MOD_ID}] [tree] OnBlockRemovedPrefix: Log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z}) mapped to existing tree {treeKey}");
+                    }
+                }
+                else
+                {
+                    var basePos = mod.treeMechanics.FindTreeBase(__instance.Api.World, logPosCopy, logBlock.Code.ToString());
+                    treeKey = $"{treeId}:{basePos.X},{basePos.Y},{basePos.Z}";
+                    mod.logToTreeIdMap[logPosCopy] = treeKey;
+                    if (mod.config.DebugMode)
+                    {
+                        __instance.Api.Logger.Debug($"[{MOD_ID}] [tree] OnBlockRemovedPrefix: Log at ({logPosCopy.X}, {logPosCopy.Y}, {logPosCopy.Z}) mapped to new tree {treeKey}");
+                    }
+                }
+
+                if (mod.processedTrees.Contains(treeKey))
+                {
+                    if (mod.config.DebugMode)
+                    {
+                        __instance.Api.Logger.Debug($"[{MOD_ID}] [tree] OnBlockRemovedPrefix skipped: Tree {treeKey} already processed for fire at ({pos.X}, {pos.Y}, {pos.Z})");
+                    }
+                }
+                else
+                {
+                    mod.processedTrees.Add(treeKey);
+                    mod.treeMechanics.TryFellTree(pos);
+                }
             }
             mod.treeMechanics.RemoveFireToLogMapping(pos);
         }
@@ -119,6 +204,7 @@ namespace Pyrogenesis
             var toRemove = new List<BlockPos>();
             var leafBlocksDestroyed = new List<BlockPos>();
             var logBlocksDestroyed = new List<BlockPos>();
+            var treeIdsToClear = new HashSet<string>();
 
             foreach (var kvp in treeMechanics.GetBurningBlocks())
             {
@@ -129,13 +215,21 @@ namespace Pyrogenesis
                     if (block.Code?.ToString() == burning.BlockCode)
                     {
                         serverApi.World.BlockAccessor.BreakBlock(burning.Pos, null, 1f);
-                        if (burning.BlockCode.StartsWith("game:leaves-"))
+                        if (burning.BlockCode.StartsWith("game:leaves-") || burning.BlockCode.StartsWith("game:leavesbranchy-"))
                         {
                             leafBlocksDestroyed.Add(burning.Pos);
+                            if (config.DebugMode)
+                            {
+                                serverApi.Logger.Debug($"[{MOD_ID}] [tree] Destroyed leaf at ({burning.Pos.X}, {burning.Pos.Y}, {burning.Pos.Z}), BlockCode: {burning.BlockCode}, Duration: {burning.BurnDuration}s");
+                            }
                         }
                         else if (config.TreeLogPrefixes.Any(prefix => burning.BlockCode.StartsWith($"game:{prefix}-")))
                         {
                             logBlocksDestroyed.Add(burning.Pos);
+                            if (config.DebugMode)
+                            {
+                                serverApi.Logger.Debug($"[{MOD_ID}] [tree] Destroyed log at ({burning.Pos.X}, {burning.Pos.Y}, {burning.Pos.Z}), BlockCode: {burning.BlockCode}, Duration: {burning.BurnDuration}s");
+                            }
                         }
                     }
                     toRemove.Add(burning.Pos);
@@ -149,11 +243,37 @@ namespace Pyrogenesis
             if (logBlocksDestroyed.Count > 0)
             {
                 serverApi.Logger.Notification($"[{MOD_ID}] [tree] Tree felling event: {logBlocksDestroyed.Count} log blocks destroyed");
+                // Find associated tree IDs to clear highlights
+                foreach (var pos in logBlocksDestroyed)
+                {
+                    foreach (var entry in logToTreeIdMap)
+                    {
+                        if (entry.Key.Equals(pos))
+                        {
+                            var treeIdParts = entry.Value.Split(':');
+                            if (treeIdParts.Length >= 4)
+                            {
+                                string treeId = treeIdParts[0];
+                                treeIdsToClear.Add(treeId);
+                            }
+                            break;
+                        }
+                    }
+                }
             }
 
             foreach (var pos in toRemove)
             {
                 treeMechanics.RemoveBurningBlock(pos);
+            }
+
+            // Clear highlights for destroyed trees
+            foreach (var treeId in treeIdsToClear)
+            {
+                foreach (var firePos in treeMechanics.GetBurningBlocks().Keys)
+                {
+                    treeMechanics.ClearHighlights(treeId, firePos);
+                }
             }
             toRemove.Clear();
 
@@ -219,6 +339,8 @@ namespace Pyrogenesis
                     soilMechanics.AddPendingBlock(kvp.Key, kvp.Value);
                 }
             }
+            processedTrees.Clear(); // Clear processed trees on load to allow reprocessing
+            logToTreeIdMap.Clear(); // Clear log to tree ID mapping on load
         }
 
         public override void Dispose()

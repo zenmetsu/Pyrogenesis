@@ -43,25 +43,33 @@ namespace Pyrogenesis
             }
         }
 
+        public void ClearHighlights(string treeId, BlockPos firePos)
+        {
+            if (!config.DebugMode) return;
+            int groupId = (treeId + firePos.ToString()).GetHashCode();
+            foreach (var player in api.World.AllOnlinePlayers)
+            {
+                api.World.HighlightBlocks(player, groupId + 1, new List<BlockPos>(), EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube);
+                api.World.HighlightBlocks(player, groupId + 2, new List<BlockPos>(), EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube);
+                api.World.HighlightBlocks(player, groupId + 3, new List<BlockPos>(), EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube);
+            }
+        }
+
         public void AddFireToLogMapping(BlockPos firePos, BlockPos logPos) => fireToLogMap[firePos] = logPos;
 
         public void RemoveFireToLogMapping(BlockPos firePos) => fireToLogMap.Remove(firePos);
 
-        private bool IsTreeLog(string blockCode, PyrogenesisConfig config)
+        private bool IsTreeLog(string blockCode)
         {
             if (string.IsNullOrEmpty(blockCode)) return false;
-            config = config ?? new PyrogenesisConfig();
             return config.TreeLogPrefixes.Any(prefix => blockCode.StartsWith($"game:{prefix}-"));
         }
 
-        private static bool IsTreeLeaf(string blockCode, PyrogenesisConfig config)
+        private bool IsTreeLeaf(string blockCode)
         {
             if (string.IsNullOrEmpty(blockCode)) return false;
             if (!blockCode.StartsWith("game:leaves-") && !blockCode.StartsWith("game:leavesbranchy-")) return false;
-            if (new TreeMechanics(null, config).IsTreeLog(blockCode, config))
-            {
-                return false;
-            }
+            if (IsTreeLog(blockCode)) return false; // Ensure logs are not mistaken for leaves
             return true;
         }
 
@@ -72,7 +80,7 @@ namespace Pyrogenesis
                 var checkPos = new BlockPos(firePos.X, firePos.Y + yOffset, firePos.Z);
                 var checkBlock = world.BlockAccessor.GetBlock(checkPos);
                 var checkBlockCode = checkBlock?.Code?.ToString();
-                if (checkBlock != null && !string.IsNullOrEmpty(checkBlockCode) && IsTreeLog(checkBlockCode, config))
+                if (checkBlock != null && !string.IsNullOrEmpty(checkBlockCode) && IsTreeLog(checkBlockCode))
                 {
                     var basePos = FindTreeBase(world, checkPos, checkBlockCode);
                     return (basePos.Copy(), checkBlock.Id, checkBlockCode);
@@ -88,7 +96,7 @@ namespace Pyrogenesis
                         var checkPos = new BlockPos(firePos.X + xOffset, firePos.Y + yOffset, firePos.Z + zOffset);
                         var checkBlock = world.BlockAccessor.GetBlock(checkPos);
                         var checkBlockCode = checkBlock?.Code?.ToString();
-                        if (checkBlock != null && !string.IsNullOrEmpty(checkBlockCode) && IsTreeLog(checkBlockCode, config))
+                        if (checkBlock != null && !string.IsNullOrEmpty(checkBlockCode) && IsTreeLog(checkBlockCode))
                         {
                             var basePos = FindTreeBase(world, checkPos, checkBlockCode);
                             return (basePos.Copy(), checkBlock.Id, checkBlockCode);
@@ -106,14 +114,14 @@ namespace Pyrogenesis
                         var checkPos = new BlockPos(firePos.X + xOffset, firePos.Y + yOffset, firePos.Z + zOffset);
                         var checkBlock = world.BlockAccessor.GetBlock(checkPos);
                         var checkBlockCode = checkBlock?.Code?.ToString();
-                        if (checkBlock != null && !string.IsNullOrEmpty(checkBlockCode) && IsTreeLeaf(checkBlockCode, config))
+                        if (checkBlock != null && !string.IsNullOrEmpty(checkBlockCode) && IsTreeLeaf(checkBlockCode))
                         {
                             var logPos = FindTreeBaseFromLeaf(world, checkPos, checkBlockCode);
                             if (logPos != null)
                             {
                                 var logBlock = world.BlockAccessor.GetBlock(logPos);
                                 var logBlockCode = logBlock.Code?.ToString();
-                                if (logBlockCode != null && IsTreeLog(logBlockCode, config))
+                                if (logBlockCode != null && IsTreeLog(logBlockCode))
                                 {
                                     return (logPos.Copy(), logBlock.Id, logBlockCode);
                                 }
@@ -126,12 +134,16 @@ namespace Pyrogenesis
             return null;
         }
 
-        private BlockPos FindTreeBase(IWorldAccessor world, BlockPos logPos, string logBlockCode)
+        public BlockPos FindTreeBase(IWorldAccessor world, BlockPos logPos, string logBlockCode)
         {
             var parts = logBlockCode.Split('-');
             string treeFellingGroupCode = parts.Length >= 3 ? parts[2].Split(':').Last() : null;
             if (treeFellingGroupCode == null)
             {
+                if (config.DebugMode)
+                {
+                    api.Logger.Debug($"[{MOD_ID}] [tree] FindTreeBase: No group code found for block at ({logPos.X}, {logPos.Y}, {logPos.Z}), returning original position");
+                }
                 return logPos;
             }
 
@@ -144,7 +156,7 @@ namespace Pyrogenesis
                 var checkPos = new BlockPos(logPos.X, y, logPos.Z);
                 var checkBlock = world.BlockAccessor.GetBlock(checkPos);
                 var checkBlockCode = checkBlock?.Code?.ToString();
-                if (checkBlockCode == null || !IsTreeLog(checkBlockCode, config)) break;
+                if (checkBlockCode == null || !IsTreeLog(checkBlockCode)) break;
 
                 string checkGroupCode = checkBlock.Attributes?["treeFellingGroupCode"].AsString();
                 if (checkGroupCode == null || !checkGroupCode.EndsWith(treeFellingGroupCode))
@@ -169,7 +181,7 @@ namespace Pyrogenesis
                         var checkPos = new BlockPos(pos.X + xOffset, pos.Y, pos.Z + zOffset);
                         var checkBlock = world.BlockAccessor.GetBlock(checkPos);
                         var checkBlockCode = checkBlock?.Code?.ToString();
-                        if (checkBlockCode == null || !IsTreeLog(checkBlockCode, config)) continue;
+                        if (checkBlockCode == null || !IsTreeLog(checkBlockCode)) continue;
 
                         string checkGroupCode = checkBlock.Attributes?["treeFellingGroupCode"].AsString();
                         if (checkGroupCode == treeFellingGroupCode)
@@ -181,7 +193,12 @@ namespace Pyrogenesis
             }
 
             // Select northwest-most base block
-            return baseCandidates.OrderBy(p => p.Z).ThenBy(p => p.X).First();
+            var finalBase = baseCandidates.OrderBy(p => p.Z).ThenBy(p => p.X).First();
+            if (config.DebugMode)
+            {
+                api.Logger.Debug($"[{MOD_ID}] [tree] FindTreeBase for ({logPos.X}, {logPos.Y}, {logPos.Z}): Base position ({finalBase.X}, {finalBase.Y}, {finalBase.Z}), Candidates: {baseCandidates.Count}");
+            }
+            return finalBase;
         }
 
         private BlockPos FindTreeBaseFromLeaf(IWorldAccessor world, BlockPos leafPos, string leafBlockCode)
@@ -203,7 +220,7 @@ namespace Pyrogenesis
                         var checkPos = new BlockPos(leafPos.X + xOffset, y, leafPos.Z + zOffset);
                         var checkBlock = world.BlockAccessor.GetBlock(checkPos);
                         var checkBlockCode = checkBlock?.Code?.ToString();
-                        if (checkBlockCode == null || !IsTreeLog(checkBlockCode, config)) continue;
+                        if (checkBlockCode == null || !IsTreeLog(checkBlockCode)) continue;
 
                         string checkGroupCode = checkBlock.Attributes?["treeFellingGroupCode"].AsString();
                         if (checkGroupCode == treeFellingGroupCode)
@@ -265,7 +282,7 @@ namespace Pyrogenesis
 
             var logBlock = api.World.BlockAccessor.GetBlock(logPos);
             var logBlockCode = logBlock.Code?.ToString();
-            if (logBlockCode == null || !IsTreeLog(logBlockCode, config))
+            if (logBlockCode == null || !IsTreeLog(logBlockCode))
             {
                 if (config.DebugMode)
                 {
@@ -321,10 +338,9 @@ namespace Pyrogenesis
             int leafCount = 0;
             var currentTime = api.World.ElapsedMilliseconds / 1000f;
 
-            if (config.DebugMode)
-            {
-                api.Logger.Debug($"[{MOD_ID}] [tree] leafPositions count: {leafPositions.Count}");
-            }
+            // Lists for highlighting
+            var logHighlightPositions = new List<BlockPos>();
+            var leafHighlightPositions = new List<BlockPos>();
 
             foreach (var blockPos in treeBlocks)
             {
@@ -335,26 +351,39 @@ namespace Pyrogenesis
                     if (blockCode == null || block.Id == 0) continue;
 
                     int distanceFromBase = 0;
-                    if (IsTreeLeaf(blockCode, config))
+                    bool isLog = IsTreeLog(blockCode);
+                    bool isLeaf = IsTreeLeaf(blockCode);
+
+                    if (isLog)
                     {
+                        logCount++;
+                        logHighlightPositions.Add(blockPos.Copy());
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Log queued for burning at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
+                        }
+                    }
+                    else if (isLeaf)
+                    {
+                        leafCount++;
                         var leafTuple = leafPositions.Find(l => l.Pos.Equals(blockPos));
                         if (leafTuple.Pos != null)
                         {
                             distanceFromBase = leafTuple.DistanceFromBase;
                         }
+                        leafHighlightPositions.Add(blockPos.Copy());
                         if (config.DebugMode)
                         {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Leaf detected at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, DistanceFromBase: {distanceFromBase}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Leaf queued for burning at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, DistanceFromBase: {distanceFromBase}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
                         }
-                        leafCount++;
                     }
-                    else if (IsTreeLog(blockCode, config))
+                    else
                     {
                         if (config.DebugMode)
                         {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Log detected at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
+                            api.Logger.Warning($"[{MOD_ID}] [tree] Unclassified block at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}");
                         }
-                        logCount++;
+                        continue;
                     }
 
                     burningBlocks[blockPos.Copy()] = new BurningBlock(blockPos.Copy(), blockCode, currentTime, config, distanceFromBase);
@@ -370,31 +399,46 @@ namespace Pyrogenesis
 
                 if (config.DebugMode)
                 {
+                    // Highlight fire in red
                     if (firePos != null)
                     {
                         var firePositions = new List<BlockPos> { firePos.Copy() };
                         var fireColors = new List<int> { unchecked((int)0xFFFF0000) }; // Red (ARGB)
                         foreach (var player in api.World.AllOnlinePlayers)
                         {
-                            api.World.HighlightBlocks(player, groupId, firePositions, fireColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            api.World.HighlightBlocks(player, groupId + 1, firePositions, fireColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
                         }
                     }
 
-                    if (logPositions.Count > 0)
+                    // Highlight logs in blue
+                    if (logHighlightPositions.Count > 0)
                     {
-                        var logColors = Enumerable.Repeat(unchecked((int)0xFF0000FF), logPositions.Count).ToList(); // Blue (ARGB)
+                        var logColors = Enumerable.Repeat(unchecked((int)0xFF0000FF), logHighlightPositions.Count).ToList(); // Blue (ARGB)
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting {logHighlightPositions.Count} log blocks in blue");
+                            foreach (var pos in logHighlightPositions)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Log highlight position: ({pos.X}, {pos.Y}, {pos.Z})");
+                            }
+                        }
                         foreach (var player in api.World.AllOnlinePlayers)
                         {
-                            api.World.HighlightBlocks(player, groupId, logPositions.Select(p => p.Copy()).ToList(), logColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            api.World.HighlightBlocks(player, groupId + 2, logHighlightPositions.Select(p => p.Copy()).ToList(), logColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
                         }
                     }
 
-                    if (leafPositions.Count > 0)
+                    // Highlight leaves in green
+                    if (leafHighlightPositions.Count > 0)
                     {
-                        var leafColors = Enumerable.Repeat(unchecked((int)0xFF00FF00), leafPositions.Count).ToList(); // Lime Green (ARGB)
+                        var leafColors = Enumerable.Repeat(unchecked((int)0xFF00FF00), leafHighlightPositions.Count).ToList(); // Green (ARGB)
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting {leafHighlightPositions.Count} leaf blocks in green");
+                        }
                         foreach (var player in api.World.AllOnlinePlayers)
                         {
-                            api.World.HighlightBlocks(player, groupId, leafPositions.Select(l => l.Pos.Copy()).ToList(), leafColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            api.World.HighlightBlocks(player, groupId + 3, leafHighlightPositions.Select(l => l.Copy()).ToList(), leafColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
                         }
                     }
                 }
@@ -414,13 +458,12 @@ namespace Pyrogenesis
 
             var startBlock = world.BlockAccessor.GetBlock(startPos);
             var startBlockCode = startBlock.Code?.ToString();
-            if (startBlockCode == null || !IsTreeLog(startBlockCode, config))
+            if (startBlockCode == null || !IsTreeLog(startBlockCode))
             {
                 return (new List<BlockPos>(), new List<BlockPos>(), new List<(BlockPos, int)>());
             }
 
             string treeFellingGroupCode = startBlock.Attributes?["treeFellingGroupCode"].AsString();
-            int spreadIndex = NeedsSpreadIndex(startBlockCode) ? startBlock.Attributes?["treeFellingGroupSpreadIndex"].AsInt(0) ?? 0 : -1;
             if (string.IsNullOrEmpty(treeFellingGroupCode))
             {
                 return (new List<BlockPos>(), new List<BlockPos>(), new List<(BlockPos, int)>());
@@ -429,45 +472,49 @@ namespace Pyrogenesis
             // Pre-fetch blocks for efficiency
             var blockCache = PreFetchBlocks(world, startPos, config.LeafSearchRadius);
 
-            // Track the base log position to distinguish this tree
             var basePos = FindTreeBase(world, startPos, startBlockCode);
             var treeId = $"{treeFellingGroupCode}:{basePos.X},{basePos.Y},{basePos.Z}";
 
-            var queue = new Queue<(BlockPos Pos, int SpreadIndex, int Distance, bool IsLog)>();
+            var queue = new Queue<(BlockPos Pos, int Distance)>();
             var visited = new HashSet<BlockPos>();
             var treeBlocks = new List<BlockPos>();
             var logPositions = new List<BlockPos>();
             var leafPositions = new List<(BlockPos Pos, int DistanceFromBase)>();
-            const int MAX_BLOCKS = 1000;
-            int totalBlocksProcessed = 0;
 
-            // Start with the base log
-            queue.Enqueue((startPos.Copy(), spreadIndex, 0, true));
+            queue.Enqueue((startPos.Copy(), 0));
             visited.Add(startPos);
 
-            while (queue.Count > 0 && totalBlocksProcessed < MAX_BLOCKS)
+            while (queue.Count > 0)
             {
-                totalBlocksProcessed++;
-                var (currentPos, currentSpreadIndex, currentDistance, isLog) = queue.Dequeue();
+                var (currentPos, currentDistance) = queue.Dequeue();
                 if (!blockCache.TryGetValue(currentPos, out var blockData)) continue;
                 var block = blockData.Block;
                 var blockCode = blockData.BlockCode;
                 if (blockCode == null || block.Id == 0) continue;
 
                 string ngCode = block.Attributes?["treeFellingGroupCode"].AsString();
-                int nSpreadIndex = NeedsSpreadIndex(blockCode) ? block.Attributes?["treeFellingGroupSpreadIndex"].AsInt(0) ?? 0 : -1;
 
-                // Validate block belongs to this tree
+                bool isLog = IsTreeLog(blockCode);
+                bool isLeaf = IsTreeLeaf(blockCode);
                 bool isValidBlock = false;
-                if (isLog && IsTreeLog(blockCode, config) && ngCode != null && (ngCode == treeFellingGroupCode || ngCode.EndsWith(treeFellingGroupCode)) && (nSpreadIndex <= currentSpreadIndex || !NeedsSpreadIndex(blockCode)))
+
+                if (isLog && ngCode != null && (ngCode == treeFellingGroupCode || ngCode.EndsWith(treeFellingGroupCode)))
                 {
                     isValidBlock = true;
                     logPositions.Add(currentPos.Copy());
+                    if (config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] Log detected at ({currentPos.X}, {currentPos.Y}, {currentPos.Z}), BlockCode: {blockCode}, GroupCode: {ngCode}");
+                    }
                 }
-                else if (!isLog && IsTreeLeaf(blockCode, config) && ngCode != null && NormalizeGroupCode(ngCode) == treeFellingGroupCode)
+                else if (isLeaf && ngCode != null && NormalizeGroupCode(ngCode) == treeFellingGroupCode)
                 {
                     isValidBlock = true;
                     leafPositions.Add((currentPos.Copy(), currentDistance));
+                    if (config.DebugMode)
+                    {
+                        api.Logger.Debug($"[{MOD_ID}] [tree] Leaf detected at ({currentPos.X}, {currentPos.Y}, {currentPos.Z}), BlockCode: {blockCode}, GroupCode: {ngCode}, Normalized: {NormalizeGroupCode(ngCode)}");
+                    }
                 }
 
                 if (isValidBlock)
@@ -487,37 +534,27 @@ namespace Pyrogenesis
                         var neighborCode = neighborData.BlockCode;
                         if (neighborCode == null || neighborBlock.Id == 0) continue; // Skip air blocks
 
-                        string nNgCode = neighborBlock.Attributes?["treeFellingGroupCode"].AsString();
-                        int nNSpreadIndex = NeedsSpreadIndex(neighborCode) ? neighborBlock.Attributes?["treeFellingGroupSpreadIndex"].AsInt(0) ?? 0 : -1;
-
-                        // Check if neighbor is a log or leaf of the same tree
-                        if (IsTreeLog(neighborCode, config) && nNgCode != null && (nNgCode == treeFellingGroupCode || nNgCode.EndsWith(treeFellingGroupCode)) && (nNSpreadIndex <= currentSpreadIndex || !NeedsSpreadIndex(neighborCode)))
+                        string neighborGroupCode = neighborBlock.Attributes?["treeFellingGroupCode"].AsString();
+                        if (IsTreeLog(neighborCode) && neighborGroupCode != null && (neighborGroupCode == treeFellingGroupCode || neighborGroupCode.EndsWith(treeFellingGroupCode)))
                         {
-                            // Verify the log belongs to this tree by checking its base
-                            var neighborBase = FindTreeBase(world, neighborPos, neighborCode);
-                            if (neighborBase.Equals(basePos))
+                            queue.Enqueue((neighborPos.Copy(), currentDistance + 1));
+                            visited.Add(neighborPos);
+                            if (config.DebugMode)
                             {
-                                queue.Enqueue((neighborPos.Copy(), nNSpreadIndex, currentDistance + 1, true));
-                                visited.Add(neighborPos);
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Enqueued log neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}), BlockCode: {neighborCode}, GroupCode: {neighborGroupCode}");
                             }
                         }
-                        else if (IsTreeLeaf(neighborCode, config) && nNgCode != null && NormalizeGroupCode(nNgCode) == treeFellingGroupCode)
+                        else if (IsTreeLeaf(neighborCode) && neighborGroupCode != null && NormalizeGroupCode(neighborGroupCode) == treeFellingGroupCode)
                         {
-                            queue.Enqueue((neighborPos.Copy(), nNSpreadIndex, currentDistance + 1, false));
+                            queue.Enqueue((neighborPos.Copy(), currentDistance + 1));
                             visited.Add(neighborPos);
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Enqueued leaf neighbor at ({neighborPos.X}, {neighborPos.Y}, {neighborPos.Z}), BlockCode: {neighborCode}, GroupCode: {neighborGroupCode}");
+                            }
                         }
                     }
                 }
-
-                if (config.DebugMode && totalBlocksProcessed % 100 == 0)
-                {
-                    api.Logger.Debug($"[{MOD_ID}] [tree] Processing block at ({currentPos.X}, {currentPos.Y}, {currentPos.Z}), Queue size: {queue.Count}, Total blocks: {totalBlocksProcessed}");
-                }
-            }
-
-            if (totalBlocksProcessed >= MAX_BLOCKS)
-            {
-                api.Logger.Warning($"[{MOD_ID}] [tree] FindTree aborted for tree {treeId} due to exceeding {MAX_BLOCKS} blocks");
             }
 
             if (config.DebugMode)
