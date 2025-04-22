@@ -38,7 +38,10 @@ namespace Pyrogenesis
         {
             config = serverApi.LoadModConfig<PyrogenesisConfig>("pyrogenesis.json") ?? new PyrogenesisConfig();
             serverApi.StoreModConfig(config, "pyrogenesis.json");
-            serverApi.Logger.Debug($"[{MOD_ID}] Config loaded, DebugMode: {config.DebugMode}");
+            if (config.DebugMode)
+            {
+                serverApi.Logger.Debug($"[{MOD_ID}] Config loaded, DebugMode: {config.DebugMode}");
+            }
         }
 
         private void ApplyHarmonyPatches()
