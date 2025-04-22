@@ -6,7 +6,7 @@
         "petrichor"
     ],
     "description": "Enhances wildfire mechanics with respect to soil blocks to provide additional realism.",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "dependencies": {
         "game": "1.20.7"
     }
