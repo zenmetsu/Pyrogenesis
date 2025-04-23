@@ -206,6 +206,7 @@ namespace Pyrogenesis
             var logBlocksDestroyed = new List<BlockPos>();
             var treeIdsToClear = new HashSet<string>();
 
+            // Process blocks scheduled for destruction (not currently on fire, but queued to be removed after BurnDuration)
             foreach (var kvp in treeMechanics.GetBurningBlocks())
             {
                 var burning = kvp.Value;
