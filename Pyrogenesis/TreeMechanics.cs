@@ -18,6 +18,7 @@ namespace Pyrogenesis
         private readonly HashSet<string> activeTrees = new();
         private readonly Dictionary<string, HashSet<BlockPos>> treeBlocksByTreeId = new();
         private readonly Dictionary<string, BlockPos> treeBaseByTreeId = new(); // Track base block for deduplication
+        private readonly Dictionary<BlockPos, (BlockPos LogPos, string TreeId, BlockPos BasePos)> delayedPruningTasks = new(); // Store state for delayed pruning
         private const string MOD_ID = "pyrogenesis";
         private const float TREE_FELLING_COOLDOWN_SECONDS = 15f;
         private const float HIGHLIGHT_LINE_WIDTH = 1f;
@@ -57,7 +58,11 @@ namespace Pyrogenesis
 
         public void AddFireToLogMapping(BlockPos firePos, BlockPos logPos) => fireToLogMap[firePos] = logPos;
 
-        public void RemoveFireToLogMapping(BlockPos firePos) => fireToLogMap.Remove(firePos);
+        public void RemoveFireToLogMapping(BlockPos firePos)
+        {
+            fireToLogMap.Remove(firePos);
+            delayedPruningTasks.Remove(firePos); // Clean up any delayed tasks
+        }
 
         private bool IsTreeLog(string blockCode)
         {
@@ -331,175 +336,199 @@ namespace Pyrogenesis
                 return;
             }
 
-            // Prune game:leaves- blocks to break connections between trees
-            int prunedLeaves = 0;
-            foreach (var blockPos in initialTreeBlocks)
+            // Store the state for delayed pruning
+            delayedPruningTasks[firePos.Copy()] = (logPos.Copy(), canonicalTreeId, basePos.Copy());
+
+            // Schedule the pruning and second pass after the delay
+            if (config.DebugMode)
             {
-                var block = api.World.BlockAccessor.GetBlock(blockPos);
-                var blockCode = block.Code?.ToString();
-                if (blockCode != null && IsPrunableLeaf(blockCode))
+                api.Logger.Debug($"[{MOD_ID}] [tree] Scheduling canopy pruning for tree {canonicalTreeId} at ({logPos.X}, {logPos.Y}, {logPos.Z}) after {config.CanopyPruningDelaySeconds} seconds");
+            }
+            api.World.RegisterCallback(dt =>
+            {
+                // Check if the task still exists (it might have been removed if the fire was extinguished)
+                if (!delayedPruningTasks.TryGetValue(firePos, out var task))
                 {
-                    api.World.BlockAccessor.BreakBlock(blockPos, null, 1f);
-                    prunedLeaves++;
                     if (config.DebugMode)
                     {
-                        api.Logger.Debug($"[{MOD_ID}] [tree] Pruned leaf at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}");
+                        api.Logger.Debug($"[{MOD_ID}] [tree] Delayed pruning skipped: Fire at ({firePos.X}, {firePos.Y}, {firePos.Z}) no longer exists");
                     }
+                    return;
                 }
-            }
 
-            if (prunedLeaves > 0)
-            {
-                api.Logger.Notification($"[{MOD_ID}] [tree] Pruned {prunedLeaves} leaves to separate overlapping canopies for tree {canonicalTreeId}");
-            }
-
-            // Second pass: Re-run FindTree from the original log position to collect only the target tree's blocks
-            var (treeBlocks, logPositions, leafPositions) = FindTree(api.World, logPos);
-            if (treeBlocks.Count == 0)
-            {
-                if (config.DebugMode)
-                {
-                    api.Logger.Debug($"[{MOD_ID}] [tree] TryFellTree failed: No tree blocks found in second pass at ({logPos.X}, {logPos.Y}, {logPos.Z})");
-                }
-                return;
-            }
-
-            if (!treeBlocksByTreeId.ContainsKey(canonicalTreeId))
-            {
-                treeBlocksByTreeId[canonicalTreeId] = new HashSet<BlockPos>();
-            }
-            var treeBlockSet = treeBlocksByTreeId[canonicalTreeId];
-            foreach (var blockPos in treeBlocks)
-            {
-                treeBlockSet.Add(blockPos.Copy());
-            }
-            treeBaseByTreeId[canonicalTreeId] = basePos.Copy();
-
-            int logCount = 0;
-            int leafCount = 0;
-            var currentTime = api.World.ElapsedMilliseconds / 1000f;
-
-            // Lists for highlighting
-            var logHighlightPositions = new List<BlockPos>();
-            var leafHighlightPositions = new List<BlockPos>();
-
-            foreach (var blockPos in treeBlocks)
-            {
-                if (!burningBlocks.ContainsKey(blockPos))
+                // Prune game:leaves- blocks to break connections between trees
+                int prunedLeaves = 0;
+                foreach (var blockPos in initialTreeBlocks)
                 {
                     var block = api.World.BlockAccessor.GetBlock(blockPos);
                     var blockCode = block.Code?.ToString();
-                    if (blockCode == null || block.Id == 0) continue;
-
-                    int distanceFromBase = 0;
-                    bool isLog = IsTreeLog(blockCode);
-                    bool isLeaf = IsTreeLeaf(blockCode);
-
-                    if (isLog)
+                    if (blockCode != null && IsPrunableLeaf(blockCode))
                     {
-                        logCount++;
-                        logHighlightPositions.Add(blockPos.Copy());
+                        api.World.BlockAccessor.BreakBlock(blockPos, null, 1f);
+                        prunedLeaves++;
                         if (config.DebugMode)
                         {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Log queued for burning at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
+                            api.Logger.Debug($"[{MOD_ID}] [tree] Pruned leaf at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}");
                         }
                     }
-                    else if (isLeaf)
-                    {
-                        leafCount++;
-                        var leafTuple = leafPositions.Find(l => l.Pos.Equals(blockPos));
-                        if (leafTuple.Pos != null)
-                        {
-                            distanceFromBase = leafTuple.DistanceFromBase;
-                        }
-                        leafHighlightPositions.Add(blockPos.Copy());
-                        if (config.DebugMode)
-                        {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Leaf queued for burning at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, DistanceFromBase: {distanceFromBase}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
-                        }
-                    }
-                    else
-                    {
-                        if (config.DebugMode)
-                        {
-                            api.Logger.Warning($"[{MOD_ID}] [tree] Unclassified block at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}");
-                        }
-                        continue;
-                    }
-
-                    // Add to burningBlocks, which schedules the block for destruction after BurnDuration
-                    burningBlocks[blockPos.Copy()] = new BurningBlock(blockPos.Copy(), blockCode, currentTime, config, distanceFromBase);
                 }
-            }
 
-            if (logCount > 0 || leafCount > 0)
-            {
-                int maxLeafDistance = leafPositions.Any() ? leafPositions.Max(l => l.DistanceFromBase) : 0;
-                api.Logger.Notification($"[{MOD_ID}] [tree] Queued {logCount} new logs and {leafCount} new leaves for burning for tree {canonicalTreeId} at ({logPos.X}, {logPos.Y}, {logPos.Z}), max leaf distance: {maxLeafDistance}");
-
-                int baseGroupId = (canonicalTreeId + firePos.ToString()).GetHashCode();
-                int fireGroupId = baseGroupId;
-                int logGroupId = baseGroupId + 1;
-                int leafGroupId = baseGroupId + 2;
-
-                if (config.DebugMode)
+                if (prunedLeaves > 0)
                 {
-                    // Highlight fire in red
-                    if (firePos != null)
-                    {
-                        var firePositions = new List<BlockPos> { firePos.Copy() };
-                        var fireColors = new List<int> { unchecked((int)0xFFFF0000) }; // Red (ARGB)
-                        if (config.DebugMode)
-                        {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting fire block at ({firePos.X}, {firePos.Y}, {firePos.Z}) in red, GroupId: {fireGroupId}");
-                        }
-                        foreach (var player in api.World.AllOnlinePlayers)
-                        {
-                            api.World.HighlightBlocks(player, fireGroupId, firePositions, fireColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
-                        }
-                    }
+                    api.Logger.Notification($"[{MOD_ID}] [tree] Pruned {prunedLeaves} leaves to separate overlapping canopies for tree {task.TreeId}");
+                }
 
-                    // Highlight logs in blue
-                    if (logHighlightPositions.Count > 0)
+                // Second pass: Re-run FindTree from the original log position to collect only the target tree's blocks
+                var (treeBlocks, logPositions, leafPositions) = FindTree(api.World, task.LogPos);
+                if (treeBlocks.Count == 0)
+                {
+                    if (config.DebugMode)
                     {
-                        var logColors = Enumerable.Repeat(unchecked((int)0xFF0000FF), logHighlightPositions.Count).ToList(); // Blue (ARGB)
-                        if (config.DebugMode)
+                        api.Logger.Debug($"[{MOD_ID}] [tree] TryFellTree failed: No tree blocks found in second pass at ({task.LogPos.X}, {task.LogPos.Y}, {task.LogPos.Z})");
+                    }
+                    delayedPruningTasks.Remove(firePos);
+                    fireToLogMap.Remove(firePos);
+                    return;
+                }
+
+                if (!treeBlocksByTreeId.ContainsKey(task.TreeId))
+                {
+                    treeBlocksByTreeId[task.TreeId] = new HashSet<BlockPos>();
+                }
+                var treeBlockSet = treeBlocksByTreeId[task.TreeId];
+                foreach (var blockPos in treeBlocks)
+                {
+                    treeBlockSet.Add(blockPos.Copy());
+                }
+                treeBaseByTreeId[task.TreeId] = task.BasePos.Copy();
+
+                int logCount = 0;
+                int leafCount = 0;
+                var currentTime = api.World.ElapsedMilliseconds / 1000f;
+
+                // Lists for highlighting
+                var logHighlightPositions = new List<BlockPos>();
+                var leafHighlightPositions = new List<BlockPos>();
+
+                foreach (var blockPos in treeBlocks)
+                {
+                    if (!burningBlocks.ContainsKey(blockPos))
+                    {
+                        var block = api.World.BlockAccessor.GetBlock(blockPos);
+                        var blockCode = block.Code?.ToString();
+                        if (blockCode == null || block.Id == 0) continue;
+
+                        int distanceFromBase = 0;
+                        bool isLog = IsTreeLog(blockCode);
+                        bool isLeaf = IsTreeLeaf(blockCode);
+
+                        if (isLog)
                         {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting {logHighlightPositions.Count} log blocks in blue, GroupId: {logGroupId}");
-                            foreach (var pos in logHighlightPositions)
+                            logCount++;
+                            logHighlightPositions.Add(blockPos.Copy());
+                            if (config.DebugMode)
                             {
-                                api.Logger.Debug($"[{MOD_ID}] [tree] Log highlight position: ({pos.X}, {pos.Y}, {pos.Z})");
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Log queued for burning at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
                             }
                         }
-                        foreach (var player in api.World.AllOnlinePlayers)
+                        else if (isLeaf)
                         {
-                            api.World.HighlightBlocks(player, logGroupId, logHighlightPositions.Select(p => p.Copy()).ToList(), logColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
-                        }
-                    }
-
-                    // Highlight leaves in green
-                    if (leafHighlightPositions.Count > 0)
-                    {
-                        var leafColors = Enumerable.Repeat(unchecked((int)0xFF00FF00), leafHighlightPositions.Count).ToList(); // Green (ARGB)
-                        if (config.DebugMode)
-                        {
-                            api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting {leafHighlightPositions.Count} leaf blocks in green, GroupId: {leafGroupId}");
-                            foreach (var pos in leafHighlightPositions)
+                            leafCount++;
+                            var leafTuple = leafPositions.Find(l => l.Pos.Equals(blockPos));
+                            if (leafTuple.Pos != null)
                             {
-                                api.Logger.Debug($"[{MOD_ID}] [tree] Leaf highlight position: ({pos.X}, {pos.Y}, {pos.Z})");
+                                distanceFromBase = leafTuple.DistanceFromBase;
+                            }
+                            leafHighlightPositions.Add(blockPos.Copy());
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Leaf queued for burning at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}, DistanceFromBase: {distanceFromBase}, TreeFellingGroupCode: {block.Attributes?["treeFellingGroupCode"].AsString() ?? "null"}");
                             }
                         }
-                        foreach (var player in api.World.AllOnlinePlayers)
+                        else
                         {
-                            api.World.HighlightBlocks(player, leafGroupId, leafHighlightPositions.Select(l => l.Copy()).ToList(), leafColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Warning($"[{MOD_ID}] [tree] Unclassified block at ({blockPos.X}, {blockPos.Y}, {blockPos.Z}), BlockCode: {blockCode}");
+                            }
+                            continue;
                         }
+
+                        // Add to burningBlocks, which schedules the block for destruction after BurnDuration
+                        burningBlocks[blockPos.Copy()] = new BurningBlock(blockPos.Copy(), blockCode, currentTime, config, distanceFromBase);
                     }
                 }
 
-                MarkTreeFelled(logPos, canonicalTreeId);
-            }
+                if (logCount > 0 || leafCount > 0)
+                {
+                    int maxLeafDistance = leafPositions.Any() ? leafPositions.Max(l => l.DistanceFromBase) : 0;
+                    api.Logger.Notification($"[{MOD_ID}] [tree] Queued {logCount} new logs and {leafCount} new leaves for burning for tree {task.TreeId} at ({task.LogPos.X}, {task.LogPos.Y}, {task.LogPos.Z}), max leaf distance: {maxLeafDistance}");
 
-            fireToLogMap.Remove(firePos);
+                    int baseGroupId = (task.TreeId + firePos.ToString()).GetHashCode();
+                    int fireGroupId = baseGroupId;
+                    int logGroupId = baseGroupId + 1;
+                    int leafGroupId = baseGroupId + 2;
+
+                    if (config.DebugMode)
+                    {
+                        // Highlight fire in red
+                        if (firePos != null)
+                        {
+                            var firePositions = new List<BlockPos> { firePos.Copy() };
+                            var fireColors = new List<int> { unchecked((int)0xFFFF0000) }; // Red (ARGB)
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting fire block at ({firePos.X}, {firePos.Y}, {firePos.Z}) in red, GroupId: {fireGroupId}");
+                            }
+                            foreach (var player in api.World.AllOnlinePlayers)
+                            {
+                                api.World.HighlightBlocks(player, fireGroupId, firePositions, fireColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            }
+                        }
+
+                        // Highlight logs in blue
+                        if (logHighlightPositions.Count > 0)
+                        {
+                            var logColors = Enumerable.Repeat(unchecked((int)0xFF0000FF), logHighlightPositions.Count).ToList(); // Blue (ARGB)
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting {logHighlightPositions.Count} log blocks in blue, GroupId: {logGroupId}");
+                                foreach (var pos in logHighlightPositions)
+                                {
+                                    api.Logger.Debug($"[{MOD_ID}] [tree] Log highlight position: ({pos.X}, {pos.Y}, {pos.Z})");
+                                }
+                            }
+                            foreach (var player in api.World.AllOnlinePlayers)
+                            {
+                                api.World.HighlightBlocks(player, logGroupId, logHighlightPositions.Select(p => p.Copy()).ToList(), logColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            }
+                        }
+
+                        // Highlight leaves in green
+                        if (leafHighlightPositions.Count > 0)
+                        {
+                            var leafColors = Enumerable.Repeat(unchecked((int)0xFF00FF00), leafHighlightPositions.Count).ToList(); // Green (ARGB)
+                            if (config.DebugMode)
+                            {
+                                api.Logger.Debug($"[{MOD_ID}] [tree] Highlighting {leafHighlightPositions.Count} leaf blocks in green, GroupId: {leafGroupId}");
+                                foreach (var pos in leafHighlightPositions)
+                                {
+                                    api.Logger.Debug($"[{MOD_ID}] [tree] Leaf highlight position: ({pos.X}, {pos.Y}, {pos.Z})");
+                                }
+                            }
+                            foreach (var player in api.World.AllOnlinePlayers)
+                            {
+                                api.World.HighlightBlocks(player, leafGroupId, leafHighlightPositions.Select(l => l.Copy()).ToList(), leafColors, EnumHighlightBlocksMode.Absolute, EnumHighlightShape.Cube, HIGHLIGHT_LINE_WIDTH);
+                            }
+                        }
+                    }
+
+                    MarkTreeFelled(task.LogPos, task.TreeId);
+                }
+
+                delayedPruningTasks.Remove(firePos);
+                fireToLogMap.Remove(firePos);
+            }, (int)(config.CanopyPruningDelaySeconds * 1000));
         }
 
         private (List<BlockPos> TreeBlocks, List<BlockPos> LogPositions, List<(BlockPos Pos, int DistanceFromBase)> LeafPositions) FindTree(IWorldAccessor world, BlockPos startPos)

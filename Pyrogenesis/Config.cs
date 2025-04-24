@@ -23,6 +23,9 @@
         // Toggle to convert forest floor blocks to medium fertility soil (false = leave unchanged)
         public bool ConvertForestFloorToSoil { get; set; } = false;
 
+        // Duration (in seconds) before initial canopy pruning event takes place
+        public float CanopyPruningDelaySeconds { get; set; } = 5f; // Default delay of 5 seconds
+
         // Duration (in seconds) for logs to burn before breaking
         public float LogBurnDuration { get; set; } = 80.0f;
 

@@ -167,6 +167,7 @@ namespace Pyrogenesis
             }
             string basePrefix;
             bool isCob = blockCode.StartsWith("game:cob-");
+            bool isForestFloor = blockCode.StartsWith("game:forestfloor-");
             if (isCob)
             {
                 basePrefix = "game:cob";
@@ -179,15 +180,21 @@ namespace Pyrogenesis
                 }
                 basePrefix = "game:soil";
             }
+            else if (isForestFloor && config.ConvertForestFloorToSoil)
+            {
+                basePrefix = "game:soil";
+                parts = new[] { "game:soil", "medium", "normal" }; // Treat forest floor as soil-medium-normal
+            }
             else
             {
                 return;
             }
 
-            string fertilityTier = isCob ? "cob" : parts[1];
+            string fertilityTier = isCob ? "cob" : (isForestFloor ? "medium" : parts[1]);
+            string variant = isCob ? parts[1] : (isForestFloor ? "normal" : parts[2]);
             if (config.DebugMode)
             {
-                api.Logger.Debug($"[{MOD_ID}] [soil] Block code parts: {string.Join(", ", parts)}, extracted fertility tier: {fertilityTier}, base prefix: {basePrefix}");
+                api.Logger.Debug($"[{MOD_ID}] [soil] Block code parts: {string.Join(", ", parts)}, extracted fertility tier: {fertilityTier}, variant: {variant}, base prefix: {basePrefix}");
             }
 
             var noneBlockCode = $"{basePrefix}-{fertilityTier}-none";
@@ -221,40 +228,47 @@ namespace Pyrogenesis
                 api.Logger.Debug($"[{MOD_ID}] [soil] Successfully converted block at ({pos.X}, {pos.Y}, {pos.Z}) to -none variant (ID: {barrenBlock.Id}, Code: {noneBlockCode})");
             }
 
-            if (!isCob)
+            if (!isCob && !isForestFloor)
             {
-                var newFertilityTier = TryUpgradeFertility(fertilityTier);
-                if (newFertilityTier != fertilityTier)
+                if (variant == "normal")
                 {
-                    var upgradedBlockCode = $"game:soil-{newFertilityTier}-none";
-                    var upgradedBlock = api.World.GetBlock(new AssetLocation(upgradedBlockCode));
-                    if (upgradedBlock == null)
+                    var newFertilityTier = TryUpgradeFertility(fertilityTier);
+                    if (newFertilityTier != fertilityTier)
                     {
-                        var upgradedFallbackCodes = new[] { $"game:soil-{newFertilityTier}-no-grass", $"game:soil-{newFertilityTier}-free" };
-                        foreach (var code in upgradedFallbackCodes)
-                        {
-                            upgradedBlock = api.World.GetBlock(new AssetLocation(code));
-                            if (upgradedBlock != null)
-                            {
-                                if (config.DebugMode)
-                                {
-                                    api.Logger.Debug($"[{MOD_ID}] [soil] Found fallback upgraded soil block: {code}");
-                                }
-                                upgradedBlockCode = code;
-                                break;
-                            }
-                        }
+                        var upgradedBlockCode = $"game:soil-{newFertilityTier}-none";
+                        var upgradedBlock = api.World.GetBlock(new AssetLocation(upgradedBlockCode));
                         if (upgradedBlock == null)
                         {
-                            return;
+                            var upgradedFallbackCodes = new[] { $"game:soil-{newFertilityTier}-no-grass", $"game:soil-{newFertilityTier}-free" };
+                            foreach (var code in upgradedFallbackCodes)
+                            {
+                                upgradedBlock = api.World.GetBlock(new AssetLocation(code));
+                                if (upgradedBlock != null)
+                                {
+                                    if (config.DebugMode)
+                                    {
+                                        api.Logger.Debug($"[{MOD_ID}] [soil] Found fallback upgraded soil block: {code}");
+                                    }
+                                    upgradedBlockCode = code;
+                                    break;
+                                }
+                            }
+                            if (upgradedBlock == null)
+                            {
+                                return;
+                            }
+                        }
+                        api.World.BlockAccessor.SetBlock(upgradedBlock.Id, pos);
+                        api.Logger.Notification($"[{MOD_ID}] [soil] Upgraded soil fertility at ({pos.X}, {pos.Y}, {pos.Z}) from {noneBlockCode} to {upgradedBlockCode}");
+                        if (config.DebugMode)
+                        {
+                            api.Logger.Debug($"[{MOD_ID}] [soil] Successfully upgraded fertility at ({pos.X}, {pos.Y}, {pos.Z}) to {upgradedBlockCode}");
                         }
                     }
-                    api.World.BlockAccessor.SetBlock(upgradedBlock.Id, pos);
-                    api.Logger.Notification($"[{MOD_ID}] [soil] Upgraded soil fertility at ({pos.X}, {pos.Y}, {pos.Z}) from {noneBlockCode} to {upgradedBlockCode}");
-                    if (config.DebugMode)
-                    {
-                        api.Logger.Debug($"[{MOD_ID}] [soil] Successfully upgraded fertility at ({pos.X}, {pos.Y}, {pos.Z}) to {upgradedBlockCode}");
-                    }
+                }
+                else if (config.DebugMode)
+                {
+                    api.Logger.Debug($"[{MOD_ID}] [soil] Skipped fertility upgrade at ({pos.X}, {pos.Y}, {pos.Z}): variant is {variant}, only -normal soils can upgrade");
                 }
             }
         }
